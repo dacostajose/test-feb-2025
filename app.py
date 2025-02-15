@@ -1,196 +1,92 @@
-import json
-from datetime import timedelta
+from flask import Flask, jsonify, Response
 
-# Load the JSON data
-with open('file/mini_json_dataset.json') as f:
-    data = json.load(f)
+from report.classes import Report
+from utils.csv_utils import create_csv_based_on_arrays
 
-stops = {}
-trips = {}
-vehicles = {}
-duties = {}
+app = Flask(__name__)
 
-# Extract relevant data
-for stop in data['stops']:
-    stop_id = stop.get('stop_id')
-    stops[stop_id] = stop
+report = Report('file/mini_json_dataset.json')
 
-for trip in data['trips']:
-    trip_id = trip.get('trip_id')
-    trips[trip_id] = trip
+@app.route('/reports/duty_reports', methods=['GET'])
+def generate_duty_reports():
+    return jsonify(report.generate_duty_reports())
 
-for vehicle in data['vehicles']:
-    vehicle_id = vehicle.get('vehicle_id')
-    vehicles[vehicle_id] = vehicle
+@app.route('/reports/full_duty_reports', methods=['GET'])
+def generate_full_duty_reports():
+    return jsonify(report.generate_duty_reports(include_trip=True))
 
-for duty in data['duties']:
-    duty_id = duty.get('duty_id')
-    duties[duty_id] = duty.get('duty_events')
-
-
-def parse_time(time_str):
-    day_offset, time = time_str.split('.')
-    hours, minutes = map(int, time.split(':'))
-    return timedelta(days=int(day_offset), hours=hours, minutes=minutes)
-
-def convert_timedelta_to_human_readable(td):
-    total_hours = td.days * 24 + td.seconds // 3600
-    minutes = (td.seconds % 3600) // 60
-    final_hours = total_hours % 24
-    return f"{final_hours:02}:{minutes:02}"
-
-def generate_duty_reports(duties, vehicles, include_trip=False):
-    report = []
-    for duty_id, duty_events in duties.items():
-        start_times = []
-        end_times = []
-        trip_start_times = []
-        trip_end_times = []
-
-        for event in duty_events:
-            vehicle_id = event.get('vehicle_id')
-            vehicle_event_sequence = event.get('vehicle_event_sequence')
-            if vehicle_id:
-                vehicle_events = vehicles.get(vehicle_id).get('vehicle_events')
-                v_event = {}
-                if vehicle_events:
-                    for e in vehicle_events:
-                        if int(e.get('vehicle_event_sequence')) == vehicle_event_sequence:
-                            v_event = e
-                            break
-
-                if v_event.get('vehicle_event_type') != 'service_trip':
-                    start_times.append(parse_time(v_event.get('start_time')))
-                    end_times.append(parse_time(v_event.get('end_time')))
-                else:
-                    trip_id = v_event.get('trip_id')
-                    trip = trips.get(trip_id)
-                    if trip:
-                        if include_trip:
-                            trip_start_times.append([
-                                parse_time(trip.get('departure_time')),
-                                stops.get(trip.get('origin_stop_id', ''), {}).get('stop_name')
-                            ])
-                            trip_end_times.append([
-                                parse_time(trip.get('arrival_time')),
-                                stops.get(trip.get('destination_stop_id', ''), {}).get('stop_name')
-                            ])
-                        start_times.append(parse_time(trip.get('departure_time')))
-                        end_times.append(parse_time(trip.get('arrival_time')))
-
-        start_time = convert_timedelta_to_human_readable(min(start_times))
-        end_time = convert_timedelta_to_human_readable(max(end_times))
-
-        if include_trip:
-            start_trip_time = min(trip_start_times, key=lambda x: x[0])[1]
-            end_trip_time = max(trip_end_times, key=lambda x: x[0])[1]
-            report.append((
-                duty_id, # Duty id
-                start_time, # Start time
-                end_time, # End time
-                start_trip_time, # Start stop description
-                end_trip_time # End stop description
-            ))
-            continue
-        report.append((
-            duty_id, # Duty id
-            start_time, # Start time
-            end_time, # End time
-        ))
-    return report
-
-# Receive two timedelta
-def calc_time_difference_in_minutes(start_time, end_time):
-    return (end_time - start_time).total_seconds() / 60
-
+@app.route('/reports/duty_breaks_report', methods=['GET'])
 def generate_duty_breaks_report():
-    base_report = generate_duty_reports(duties, vehicles, include_trip=True)
-    duty_dict = {}
-    for row in base_report:
-        duty_id = row[0]
-        duty_dict[duty_id] = {}
-        duty_dict[duty_id]['duty_id'] = duty_id
-        duty_dict[duty_id]['start_time'] = row[1]
-        duty_dict[duty_id]['end_time'] = row[2]
-        duty_dict[duty_id]['start_trip'] = row[3]
-        duty_dict[duty_id]['end_trip'] = row[4]
+    return jsonify(report.generate_duty_breaks_report())
 
-    valid_breaks = []
 
-    for key, vehicle in vehicles.items():
-        v_events = vehicle.get('vehicle_events', [])
-        if len(v_events) > 0:
-            # Because i need to check the difference between items, i should guarantee that the events are ordered.
-            v_events = sorted(v_events, key=lambda x: int(x['vehicle_event_sequence']))
-            for i in range(len(v_events) - 1):
-                current_event_end_time = 0
-                next_event_start_time = 0
+@app.route('/download/reports/duty_reports', methods=['GET'])
+def download_duty_reports():
+    try:
+        data = report.generate_duty_reports()
+        headers = [
+            'Duty id',
+            'Start time',
+            'End time'
+        ]
+        csv_content = create_csv_based_on_arrays(data, headers)
 
-                current_event = v_events[i]
-                next_event = v_events[i+1]
-                break_stop_name = ''
+        return Response(
+            csv_content,
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment;filename=duty_report.csv"}
+        )
 
-                if current_event.get('vehicle_event_type') == 'service_trip':
-                    trip_id = current_event.get('trip_id')
-                    trip = trips.get(trip_id)
-                    if trip:
-                        break_stop_name = stops.get(trip.get('destination_stop_id'), {}).get('stop_name')
-                        stops.get(trip.get('origin_stop_id', ''), {}).get('stop_name')
-                        if current_event.get('sub_trip_index'):
-                            event_sub_trip_id = current_event.get('sub_trip_index')
-                            sub_trips = trip.get('sub_trips')
-                            sub_trip = {}
-                            for s in sub_trips:
-                                if s.get('sub_trip_index') == f'{trip_id}_{event_sub_trip_id}':
-                                    sub_trip = s
-                                    break
-                            current_event_end_time = parse_time(sub_trip.get('departure_time'))
-                        else:
-                            current_event_end_time = parse_time(trip.get('departure_time'))
-                else:
-                    break_stop_name = stops.get(v_events[i].get('destination_stop_id'), {}).get('stop_name')
-                    current_event_end_time = parse_time(v_events[i].get('end_time'))
-                
-                if next_event.get('vehicle_event_type') == 'service_trip':
-                    trip_id = next_event.get('trip_id')
-                    trip = trips.get(trip_id)
-                    if trip:
-                        if next_event.get('sub_trip_index'):
-                            event_sub_trip_id = next_event.get('sub_trip_index')
-                            sub_trips = trip.get('sub_trips')
-                            sub_trip = {}
-                            for s in sub_trips:
-                                if s.get('sub_trip_index') == f'{trip_id}_{event_sub_trip_id}':
-                                    sub_trip = s
-                                    break
-                            next_event_start_time = parse_time(sub_trip.get('arrival_time'))
-                        else:
-                            next_event_start_time = parse_time(trip.get('arrival_time'))
-                else:
-                    next_event_start_time = parse_time(v_events[i + 1].get('start_time'))
+    except Exception as e:
+        return jsonify(error=str(e)), 500
 
-                time_difference_in_minutes = calc_time_difference_in_minutes(current_event_end_time, next_event_start_time)
-                if time_difference_in_minutes > 15:
-                    duty_info = duty_dict.get(current_event.get('duty_id'))
-                    valid_breaks.append((
-                        duty_info.get('duty_id'), # Duty id
-                        duty_info.get('start_time'), # Start time
-                        duty_info.get('end_time'), # End time
-                        duty_info.get('start_trip'), # Start stop description
-                        duty_info.get('end_trip'), # End stop description
-                        convert_timedelta_to_human_readable(current_event_end_time), # Break start time
-                        time_difference_in_minutes, # Break duration
-                        break_stop_name # Break stop name
-                    ))
-    
-    return valid_breaks
+@app.route('/download/reports/full_duty_reports', methods=['GET'])
+def download_full_duty_reports():
+    try:
+        data = report.generate_duty_reports(include_trip=True)
+        headers = [
+            'Duty id',
+            'Start time',
+            'End time',
+            'Start stop description',
+            'End stop description'
+        ]
+        csv_content = create_csv_based_on_arrays(data, headers)
 
-#start_end_time_report = generate_duty_reports(duties, vehicles)
+        return Response(
+            csv_content,
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment;filename=full_duty_reports.csv"}
+        )
 
-#trips_report = generate_duty_reports(duties, vehicles, include_trip=True)
+    except Exception as e:
+        return jsonify(error=str(e)), 500
 
-breaks_report = generate_duty_breaks_report()
+@app.route('/download/reports/duty_breaks_report', methods=['GET'])
+def download_duty_breaks_report():
+    try:
+        data = report.generate_duty_breaks_report()
+        headers = [
+            'Duty id',
+            'Start time',
+            'End time',
+            'Start stop description',
+            'End stop description',
+            'Break start time',
+            'Break duration',
+            'Break stop name'
+        ]
+        csv_content = create_csv_based_on_arrays(data, headers)
 
-for row in breaks_report:
-    print(f"{row[0]}, {row[1]}, {row[2]}, {row[3]}, {row[4]}, {row[5]}, {row[6]}, {row[7]}")
-    
+        return Response(
+            csv_content,
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment;filename=break_reports.csv"}
+        )
+
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+
+if __name__ == '__main__':
+    app.run(port=5500, debug=True)
