@@ -39,13 +39,15 @@ def convert_timedelta_to_human_readable(td):
     final_hours = total_hours % 24
     return f"{final_hours:02}:{minutes:02}"
 
-def generate_duty_reports(duties, vehicles, include_trip=False):
+def generate_duty_reports(duties, vehicles, include_trip=False, include_events=False):
     report = []
     for duty_id, duty_events in duties.items():
         start_times = []
         end_times = []
         trip_start_times = []
         trip_end_times = []
+        duty_vehicles_events = []
+
         for event in duty_events:
             vehicle_id = event.get('vehicle_id')
             vehicle_event_sequence = event.get('vehicle_event_sequence')
@@ -57,6 +59,10 @@ def generate_duty_reports(duties, vehicles, include_trip=False):
                         if int(e.get('vehicle_event_sequence')) == vehicle_event_sequence:
                             v_event = e
                             break
+
+                if include_events:
+                    duty_vehicles_events.append(v_event)
+
                 if v_event.get('vehicle_event_type') != 'service_trip':
                     start_times.append(parse_time(v_event.get('start_time')))
                     end_times.append(parse_time(v_event.get('end_time')))
@@ -82,15 +88,30 @@ def generate_duty_reports(duties, vehicles, include_trip=False):
         if include_trip:
             start_trip_time = min(trip_start_times, key=lambda x: x[0])[1]
             end_trip_time = max(trip_end_times, key=lambda x: x[0])[1]
+            if include_events:
+                report.append((duty_id, start_time, end_time, start_trip_time, end_trip_time, duty_vehicles_events))
+                continue
             report.append((duty_id, start_time, end_time, start_trip_time, end_trip_time))
             continue
         report.append((duty_id, start_time, end_time))
     return report
 
+
+def generate_duty_breaks_report():
+    base_report = generate_duty_reports(duties, vehicles, include_trip=True, include_events=True)
+    final_report = []
+    for row in base_report:
+        duty_id = row[0]
+        for event in row[5]:
+            pass
+    return final_report
+
 #start_end_time_report = generate_duty_reports(duties, vehicles)
 
-trips_report = generate_duty_reports(duties, vehicles, include_trip=True)
+#trips_report = generate_duty_reports(duties, vehicles, include_trip=True)
 
-for row in trips_report:
+breaks_report = generate_duty_breaks_report()
+
+for row in start_end_time_report:
     print(f"Duty ID: {row[0]}, Start Time: {row[1]}, End Time: {row[2]}, Start Trip place: {row[3]}, End Trip place: {row[4]}")
     
